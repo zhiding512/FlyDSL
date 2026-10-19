@@ -12,15 +12,58 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # The evidence block in .github/skills/code-review needs the full history and the base
-      # branches, and cannot fetch them once the firewall is up; Copilot may override fetch-depth.
+      # The evidence step needs the full history and the base branches; Copilot may override
+      # fetch-depth.
       - name: Fetch full history and branches
         run: |
           [ "$(git rev-parse --is-shallow-repository)" = false ] || git fetch -q --unshallow origin
           git fetch -q origin '+refs/heads/*:refs/remotes/origin/*'
+
+      # Copilot's review agent reads files but does not run commands, so review-pr's evidence for
+      # .github/skills/code-review is built here, before the agent starts. A Copilot run carries no
+      # pull_request event, so the PR is looked up from the checked-out commit.
+      - name: Build review-pr evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BASE: ${{ github.event.pull_request.base.ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set +e
+          W=.review; T=.claude/skills/review-pr/triage.py; mkdir -p $W/merge-target
+          (
+          set -euo pipefail
+          if [ -z "$PR_BASE" ]; then
+            PR=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0] | [.base.ref, .title] | @tsv')
+            PR_BASE=${PR%%$'\t'*}; PR_TITLE=${PR#*$'\t'}
+          fi
+          [ -n "$PR_BASE" ] || { echo "no pull request found for $GITHUB_SHA" >&2; exit 1; }
+          B=origin/$PR_BASE
+          printf '%s\n' "$PR_TITLE" > $W/title.txt
+          git diff --no-color --no-ext-diff "$B...HEAD" > $W/pr.diff
+          [ -s $W/pr.diff ]
+          git diff --name-only "$B...HEAD" | while IFS= read -r f; do
+            if git cat-file -e "$B:$f" 2>/dev/null; then
+              mkdir -p "$W/merge-target/$(dirname "$f")"
+              git show "$B:$f" > "$W/merge-target/$f"
+            fi
+          done
+          python3 $T rules $W/pr.diff "$PR_TITLE" . > $W/rules.tmp
+          python3 $T expand $W/rules.tmp .claude/skills/review-pr/rules.md > $W/rules_expanded.txt
+          python3 $T scan $W/pr.diff > $W/scan.txt
+          python3 $T core $W/pr.diff . > $W/core_expected.txt
+          python3 $T bounds $W/pr.diff . > $W/bounds.txt
+          python3 $T citest $W/pr.diff . . > $W/ci_coverage.txt
+          python3 $T benchcov $W/pr.diff . > $W/bench_compare.txt
+          mv $W/rules.tmp $W/rules.txt
+          )
+          rc=$?
+          echo "evidence exit=$rc" | tee $W/STATUS
+          cat $W/rules.txt 2>/dev/null
+          exit $rc

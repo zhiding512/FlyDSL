@@ -10,59 +10,35 @@ description: >
 
 # FlyDSL code review on GitHub
 
-`.claude/skills/review-pr/SKILL.md` is the standard; read it in full first. This file changes only
-what a Copilot code review cannot do as written there. Where the two disagree, this file wins.
+This review runs the `review-pr` skill. Read `.claude/skills/review-pr/SKILL.md` to its last line;
+one view shows only part of it. That file is the standard; this one changes only what a Copilot
+code review cannot do as written there, and wins where the two disagree.
 
-## Evidence, instead of fetch.sh
+## Evidence
 
-Do not run `fetch.sh` or `run_one.sh`: they call `gh`, and this sandbox blocks `api.github.com`.
-`.github/workflows/copilot-code-review.yml` fetches the full history before the firewall starts, so
-the block below needs no network. Run it as one shell command from the repository root, with the PR
-base branch and title filled in. It stops at the first failed command, including an empty diff, and
-writes `rules.txt` only if every command succeeded. Use the printed `WORK=` directory as `$W` in
-every later step.
+The setup steps in `.github/workflows/copilot-code-review.yml` run `review-pr`'s evidence step
+before this review starts, and leave its files in `.review/` at the repository root. Read
+`.review/STATUS` first. If it is missing or does not read `evidence exit=0`, the evidence did not
+build: review from the diff alone, and post a 📝 comment on the first changed line saying so.
 
-```bash
-W=$(mktemp -d /tmp/review-XXXXXX); T=.claude/skills/review-pr/triage.py; echo "WORK=$W"
-cat > $W/title.txt <<'EOF'
-<PR title>
-EOF
-(
-set -euo pipefail
-B=origin/<PR base branch>
-[ "$(git rev-parse --is-shallow-repository)" = false ] || git fetch -q --unshallow origin
-git rev-parse -q --verify "$B" > /dev/null || git fetch -q origin "+refs/heads/${B#origin/}:refs/remotes/$B"
-git diff --no-color --no-ext-diff "$B...HEAD" > $W/pr.diff
-[ -s $W/pr.diff ]
-git worktree add -q --detach $W/merge-target "$B"
-python3 $T rules $W/pr.diff "$(cat $W/title.txt)" . > $W/rules.tmp
-python3 $T expand $W/rules.tmp .claude/skills/review-pr/rules.md > $W/rules_expanded.txt
-python3 $T scan $W/pr.diff > $W/scan.txt
-python3 $T core $W/pr.diff . > $W/core_expected.txt
-python3 $T bounds $W/pr.diff . > $W/bounds.txt
-python3 $T citest $W/pr.diff . . > $W/ci_coverage.txt
-python3 $T benchcov $W/pr.diff . > $W/bench_compare.txt
-mv $W/rules.tmp $W/rules.txt
-)
-echo "evidence exit=$?"
-```
+| file | use |
+|---|---|
+| `.review/rules_expanded.txt` | the only rules to work (Steps 3 and 5) |
+| `.review/scan.txt`, `.review/bounds.txt` | candidate sites to clear or fire (Step 5) |
+| `.review/core_expected.txt` | the backbone files and their tiers (Step 4) |
+| `.review/ci_coverage.txt`, `.review/bench_compare.txt` | where added tests run; changed kernels no benchmark reaches |
+| `.review/merge-target/` | the base-branch versions of the changed files |
 
-If it does not print `evidence exit=0`, do not rebuild the evidence by hand: review from the diff you
-were given, and the gates will report the missing `rules.txt`. Read CI checks and human review
-comments through the GitHub MCP server. If the `test (linux-flydsl-*)` job logs are not readable
-there, the Perf line is `NOT MEASURED`, as Step 9 allows.
+Read CI checks and human review comments through the GitHub MCP server. If the
+`test (linux-flydsl-*)` job logs are not readable there, the Perf line is `NOT MEASURED`.
 
-## Steps 2 to 9
+## Steps
 
-Run Steps 2 to 8.6 as written, with `$W` as `$WORK`. No independent reader exists for Step 8.7:
-write `NONE AVAILABLE -- Copilot code review has no independent reader` to `$W/independent.txt`.
-Write the card to `$W/card.md` with the review line reading
-`Review (advisory, not independently refuted): ...`, then run
-`python3 .claude/skills/review-pr/triage.py gates "$W" .`. If a gate is red, fix that step once and
-run the gates again; then stop, whatever they report.
+This review does not run commands. Work Steps 2 to 8.6 as written, keeping their answers in your
+reasoning rather than in files; the gates of Step 9 and the independent refutation of Step 8.7 do
+not run here.
 
 ## Output
 
-Unlike a `review-pr` card, this review is posted. Post the card's findings as review comments on
-their `file:line`, keeping the three parts, severity and `[verified]` / `[inferred]` tag. No rule
-ids. If a gate is still red, also post a 📝 comment on the first changed line naming the red gates.
+Unlike a `review-pr` card, this review is posted. Post the findings as review comments on their
+`file:line`, keeping the three parts, severity and `[verified]` / `[inferred]` tag. No rule ids.
